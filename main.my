@@ -1,0 +1,90 @@
+main.myimport os
+import logging
+from datetime import datetime, timedelta
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters,
+    ContextTypes
+)
+from math import radians, cos, sin, asin, sqrt
+import pytz
+import asyncio
+
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_USERNAME = "Jumayev6242"
+OFFICE_LAT = 41.012345  # ofis koordinatasi (masalan)
+OFFICE_LON = 71.567890
+RADIUS_M = 100  # 100 metr radius
+
+# Hodimlarning ish vaqtlari
+employee_data = {}
+
+logging.basicConfig(level=logging.INFO)
+
+def is_within_radius(lat1, lon1, lat2, lon2, radius_meters):
+    # Haversine formulasi
+    R = 6371000
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)2
+    c = 2 * asin(sqrt(a))
+    return R * c <= radius_meters
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    keyboard = [[KeyboardButton("Ishni boshlash", request_location=True)]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text(
+        f"Salom {user.first_name}, ishni boshlash uchun lokatsiyangizni yuboring.",
+        reply_markup=reply_markup
+    )
+
+async def location_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    loc = update.message.location
+
+    if is_within_radius(loc.latitude, loc.longitude, OFFICE_LAT, OFFICE_LON, RADIUS_M):
+        now = datetime.now(pytz.timezone("Asia/Tashkent"))
+        uid = user.id
+        if uid not in employee_data:
+            employee_data[uid] = {"name": user.full_name, "start": now, "end": None}
+            await update.message.reply_text("Ish vaqti belgilandi. Yaxshi ish!")
+        else:
+            employee_data[uid]["end"] = now
+            await update.message.reply_text("Tushunarli, ishni tugatganingiz qayd etildi.")
+    else:
+        await update.message.reply_text("Siz ofis hududida emassiz. Iltimos, ofisga boring va yana urinib ko‘ring.")
+
+async def report_to_admin(app):
+    while True:
+        now = datetime.now(pytz.timezone("Asia/Tashkent"))
+        if now.hour == 17 and now.minute == 10:
+            report = "📋 *Kundalik ish hisobotlari*\n\n"
+            for uid, data in employee_data.items():
+                name = data["name"]
+                start = data.get("start")
+                end = data.get("end") or now
+                total_hours = (end - start).seconds / 3600
+                overtime = max(0, total_hours - 9)
+                report += f"*{name}*\nBoshladi: {start.strftime('%H:%M') if start else '—'}\nTugatdi: {end.strftime('%H:%M') if end else '—'}\nUmumiy: {total_hours:.1f} soat\nOrtiqcha ish: {overtime:.1f} soat\n\n"
+            try:
+                await app.bot.send_message(
+                    chat_id=f"@{ADMIN_USERNAME}",
+                    text=report,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logging.error(f"Hisobot yuborishda xatolik: {e}")
+            employee_data.clear()
+            await asyncio.sleep(60)  # takroran yuborilishining oldini olish uchun
+        await asyncio.sleep(30)
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.LOCATION, location_handler))
+    app.create_task(report_to_admin(app))
+    app.run_polling()
+
+if name == "main":
+    main()
